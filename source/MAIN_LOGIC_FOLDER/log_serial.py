@@ -3,43 +3,55 @@ log_serial.py
 
 Reads CSV lines printed by the Arduino (Logger.h: "millis,setpoint,
 temperature,duty,pwm") over serial and saves them to a timestamped
-.csv file, while also echoing them to the terminal so you can watch
-the run live.
+.csv file, while echoing them to the terminal so you can watch the run live.
 
 Usage:
     python log_serial.py                  # auto-detects the port
-    python log_serial.py COM5             # Windows: force a port
-    python log_serial.py /dev/ttyACM0     # Linux/Mac: force a port
+    python log_serial.py COM5             # force a port (Windows)
+    python log_serial.py /dev/ttyACM0     # force a port (Linux/Mac)
 
-Stop logging with Ctrl+C - the file is flushed after every row, so
-nothing is lost even if you kill it abruptly.
+Stop with Ctrl+C - the file is flushed after every row.
+Close the Arduino Serial Monitor first (only one program can use the port).
 
 Requires: pip install pyserial
 """
 
 import sys
 import csv
-import glob
 import time
 import serial
+import serial.tools.list_ports
 from datetime import datetime
 
 BAUD_RATE = 9600          # must match Logger(baud) in Logger.h
 OUTPUT_DIR = "."          # where to save the .csv files
+HEADER = ["millis", "setpoint", "temperature", "duty", "pwm"]
 
 
 def find_port():
-    """Best-effort auto-detect for an Arduino-like serial port."""
-    candidates = (
-        glob.glob("/dev/ttyACM*")
-        + glob.glob("/dev/ttyUSB*")
-        + glob.glob("/dev/cu.usbmodem*")
-        + glob.glob("/dev/cu.usbserial*")
-        + glob.glob("COM*")
-    )
-    if not candidates:
+    """Pick the first port that looks like an Arduino, else the first port."""
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
         return None
-    return candidates[0]
+    for p in ports:
+        desc = f"{p.description} {p.manufacturer}".lower()
+        if "arduino" in desc or "ch340" in desc or "usb serial" in desc:
+            return p.device
+    return ports[0].device
+
+
+def parse_row(raw):
+    """Return a list of 5 fields if raw is a valid data row, else None."""
+    parts = raw.split(",")
+    if len(parts) != len(HEADER):
+        return None
+    try:
+        int(parts[0])                      # millis must be an integer
+        for p in parts[1:]:
+            float(p)                       # accepts 'nan' too
+    except ValueError:
+        return None
+    return parts
 
 
 def main():
@@ -49,8 +61,7 @@ def main():
               "port explicitly, e.g.: python log_serial.py COM5")
         sys.exit(1)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{OUTPUT_DIR}/run_{timestamp}.csv"
+    filename = f"{OUTPUT_DIR}/run_{datetime.now():%Y%m%d_%H%M%S}.csv"
 
     print(f"Opening {port} at {BAUD_RATE} baud...")
     try:
@@ -59,7 +70,7 @@ def main():
         print(f"Could not open {port}: {e}")
         sys.exit(1)
 
-    # Give the Uno a moment - opening the port resets it.
+    # Opening the port resets the Uno; wait for it to boot.
     time.sleep(2)
     ser.reset_input_buffer()
 
@@ -67,21 +78,32 @@ def main():
 
     with open(filename, "w", newline="") as f:
         writer = csv.writer(f)
+        writer.writerow(HEADER)            # always write our own header
+        f.flush()
         row_count = 0
 
         try:
             while True:
                 raw = ser.readline().decode("utf-8", errors="replace").strip()
                 if not raw:
-                    continue  # timeout with no data - just try again
+                    continue               # timeout, no data
+
+                row = parse_row(raw)
+                if row is None:
+                    # Header echo, FATAL message, or a partial line.
+                    print(f"[skipped] {raw}")
+                    continue
 
                 print(raw)
-                writer.writerow(raw.split(","))
+                writer.writerow(row)
                 f.flush()
                 row_count += 1
 
         except KeyboardInterrupt:
             print(f"\nStopped. {row_count} rows saved to {filename}")
+        except serial.SerialException as e:
+            print(f"\nSerial connection lost: {e}\n"
+                  f"{row_count} rows saved to {filename}")
         finally:
             ser.close()
 

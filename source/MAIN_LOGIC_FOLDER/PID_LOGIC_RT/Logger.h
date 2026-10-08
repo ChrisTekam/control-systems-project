@@ -19,7 +19,7 @@ class Logger {
   //Starts Serial and prints the header row.
   void begin();
 
-  /* Duty is the 0.0 - 1.0 PID output; pwm is the actual analogErite() value
+  /* Duty is the 0.0 - 1.0 PID output; pwm is the actual analogWrite() value
    * This is sent to the heater pin.
    */
   void logRow(unsigned long timeMs, float setpoint, float temperature,
